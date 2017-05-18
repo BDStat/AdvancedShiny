@@ -1,0 +1,266 @@
+---
+title: "Data 607 Final Project"
+author: "Ann Liu-Ferrara"
+date: "May 14, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Yelp Doctor Online Review Sentiment Analysis
+
+Geting 1000 doctor reviews in NYC area using Yelp Fusion API, and web scraping reviews from multiple web pages, calculating doctor sentiment scores by formula sum(postive reviews) - sum(negative reviews), and exploring the relationships between reviews and rating.
+
+```{r echo = TRUE}
+
+library(httr)
+library(dplyr)
+library(rvest)
+library(devtools)
+httr::set_config( config( ssl_verifypeer = 0L ) )
+# devtools::install_github("jennybc/ryelp", force = TRUE)
+library(yelpr)
+library(jsonlite)
+library(httr)
+library(purrr)
+library(plyr)
+source('Credential.R')
+
+yelp <- "https://api.yelp.com"
+surl <- "https://api.yelp.com/oauth2/token"
+yelp_app <- oauth_app("yelp",
+                      key = Sys.getenv("YELP_ID"),
+                      secret = Sys.getenv("YELP_SECRET"))
+yelp_endpoint <- oauth_endpoint(NULL,
+                                authorize = surl,
+                                access = surl)
+token <- oauth2.0_token(
+  yelp_endpoint,
+  yelp_app,
+  user_params = list(grant_type = "client_credentials"),
+  use_oob = TRUE
+)
+
+# search query
+term <- "Doctor"
+location <- "New York"
+limit <- 50
+offset <- seq(0, 950, 50)
+
+set1 <- data.frame()
+for(i in 1:20) {
+  (url <- modify_url(
+    yelp,
+    path = c("v3", "businesses", "search"),
+    query = list(
+      term = term,
+      location = location,
+      limit = limit,
+      offset = offset[i]
+    )
+  ))
+  
+  locationdata = GET(url, config(token = token))
+  listMembersContent = content(locationdata)
+  listMembers = jsonlite::fromJSON(toJSON(listMembersContent))
+  yelpResults = tryCatch({
+    data.frame(listMembers)
+  }, error = function(e) {
+    NULL
+  })
+  
+  if (!is.null(yelpResults)) {
+    set1 <-
+      rbind(
+        set1,
+        data.frame(
+          'id' = unlist(yelpResults$businesses.id),
+          'name' = unlist(yelpResults$businesses.name),
+          'city' = unlist(yelpResults$businesses.location$city),
+          'state' = unlist(yelpResults$businesses.location$state),
+          'zip_code' = unlist(yelpResults$businesses.location$zip_code),
+          'country' = unlist(yelpResults$businesses.location$country),
+          'rating' = unlist(yelpResults$businesses.rating),
+          'latitude' = unlist(yelpResults$businesses.coordinate$latitude),
+          'longitude' = unlist(yelpResults$businesses.coordinate$longitude),
+          'url' = unlist(yelpResults$businesses.url),
+          'review_count' = unlist(yelpResults$businesses.review_count),
+          'phone' = unlist(yelpResults$businesses.phone)
+        )
+      )
+  }
+}
+
+set1 <- set1 %>% distinct(name, .keep_all = TRUE)
+save(set1, file = "data.Rda")
+attach("data.Rda")
+
+# Pulled from Hu and Liu-University of Illinois @ Chicago. See References
+pos <- scan('positive-words.txt', what='character', comment.char=';')
+neg <- scan('negative-words.txt', what='character', comment.char=';')
+
+library(plyr)
+library(stringr)
+
+score.sentiment = function(sentences, good_text, bad_text, .progress='none')
+{
+  
+  # we got a vector of sentences. plyr will handle a list
+  # or a vector as an "l" for us
+  # we want a simple array of scores back, so we use
+  # "l" + "a" + "ply" = "laply":
+  scores = laply(sentences, function(sentence, good_text, bad_text) {
+    
+    # clean up sentences with R's regex-driven global substitute, gsub():
+    sentence = gsub('[[:punct:]]', '', sentence)
+    sentence = gsub('[[:cntrl:]]', '', sentence)
+    sentence = gsub('\\d+', '', sentence)
+    #to remove emojis
+    # sentence <- iconv(sentence, 'UTF-8', 'ASCII')
+    sentence = tolower(sentence)        
+    # split into words. str_split is in the stringr package
+    word.list = str_split(sentence, '\\s+')
+    # sometimes a list() is one level of hierarchy too much
+    words = unlist(word.list)
+    
+    # compare our words to the dictionaries of positive & negative terms
+    pos.matches = match(words, good_text)
+    neg.matches = match(words, bad_text)
+    
+    # match() returns the position of the matched term or NA
+    # we just want a TRUE/FALSE:
+    pos.matches = !is.na(pos.matches)
+    neg.matches = !is.na(neg.matches)
+    
+    # and conveniently enough, TRUE/FALSE will be treated as 1/0 by sum():
+    score = sum(pos.matches) - sum(neg.matches)
+    
+    return(score)
+  }, good_text, bad_text, .progress=.progress )
+  
+  scores.df = data.frame(score=sum(scores), id = unique(set1$id[i]))
+  return(scores.df)
+}
+
+# data were run over night and saved in RData file
+# scores.df <- data.frame()
+# for(i in 1:nrow(set1)){
+#   n <- set1$review_count[i]
+#   # review urls
+#   surl <- sapply(seq(0, n, 20), function(x) paste0('https://www.yelp.com/biz/', set1$id[i], '?start=', x))
+#   # review Table
+#   scores <- 0
+#   for(each in surl) {
+#     # print(paste0("surl: ", each))
+#     htmlF <- read_html(each, simplifyVector = TRUE)
+#     reviews <- htmlF %>%
+#       html_nodes('.review-content p')  %>%
+#       html_text()
+#     
+#     # Call the function and return a data frame
+#     scores.df <- rbind(scores.df, score.sentiment(reviews, pos, neg, .progress='text'))
+#   }
+#   # print(paste0("scores: ", scores))
+#   scores.df
+# }
+# 
+# save(scores.df, file = "scores.Rda")
+
+attach("scores.Rda")
+
+df <- ddply(scores.df, ~id, summarise, score = sum(score))
+df <- merge(df, set1)
+save(df, file = "df.Rda")
+
+library(ggplot2)
+
+# histogram for review counts
+ggplot(data=df, aes(x = review_count)) + 
+  geom_histogram(aes(y =..density..), col="red", alpha = .2) + 
+  geom_density(col=1) + 
+  labs(title="Histogram for Review Count") +
+  labs(x="Review Count", y="")
+
+# histogram for score
+ggplot(data=df, aes(x = score)) + 
+  geom_histogram(aes(y =..density..), col="red", alpha = .2) + 
+  geom_density(col=1) + 
+  labs(title="Histogram for Score") +
+  labs(x="Score", y="")
+
+# histogram for rating
+ggplot(data=df, aes(x = rating)) + 
+  geom_histogram(aes(y =..density..), col="red", alpha = .2) + 
+  geom_density(col=1) + 
+  labs(title="Histogram for Rating") +
+  labs(x="rating", y="")
+
+# rating freq
+table(df$rating)
+# top 6 freq of review counts
+head(table(df$review_count, df$rating))
+
+# rating vs review counts
+ggplot(df, aes(x = factor(rating) , y = review_count)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(position = position_jitter(height = 0, width = 0.25), shape = 1, alpha = 0.4, color = "blue") +
+  labs(title="Doctor Rating vs. Review Counts") +
+  labs(x="Rating", y="Review Counts") +
+  geom_hline(yintercept = 0, size = 1, color = "darkgreen") +
+  BDbasics::theme_bd()
+
+
+# rating vs score
+ggplot(df, aes(x = factor(rating) , y = score)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(position = position_jitter(height = 0, width = 0.25), shape = 1, alpha = 0.4, color = "blue") +
+  labs(title="Doctor Rating vs. Score") +
+  labs(x="Rating", y="Score") +
+  geom_hline(yintercept = 0, size = 1, color = "darkgreen") +
+  BDbasics::theme_bd()
+
+
+```
+
+# Findings:
+
+1. score has a long tail, the most frequent scores are around 0
+
+2. majority doctors have less than 20 reviews
+
+3. rating vs. review count. Rating 1-star and 5-star are associated with least reviews
+
+4. rating and score are perfectly correlated between before 5-start rating. 
+
+# Recommendation:
+
+To use Yelp doctor reviews wisely, not only looking into how many stars the doctors have, but also check out review numbers and review details.
+
+# Challenges:
+
+1. Yelp Fusion API OAuth 2.0 has less documentation and support, use API v2 documentation caused confusion.Download Postman for API keys.
+
+2. multiple review pages were received via web scraping, sum up all reviews for each doctor.
+
+3. using Shiny ggvis package to create interactive app, it is more challenging combining ggplot together to create reactive charts.
+
+
+# Reference: 
+
+https://github.com/jennybc/yelpr
+
+https://github.com/Yelp/yelp-fusion/issues/59
+
+http://amunategui.github.io/yelp-cross-country-trip/
+
+http://journal.r-project.org/archive/2013-1/kahle-wickham.pdf
+
+https://www.r-bloggers.com/how-to-use-r-to-scrape-tweets-super-tuesday-2016/
+
+A list 6800 of English positive and negative opinion words - (Hu and Liu, KDD-2004), University of Illinois @ Chicago
+
+https://shiny.rstudio.com/gallery/movie-explorer.html
+
+https://gist.github.com/mylesmharrison/8886272
