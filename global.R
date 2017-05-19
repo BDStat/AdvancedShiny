@@ -1,12 +1,13 @@
+library(ggvis)
 library(dplyr)
+library(RSQLite)
+library(ggplot2)
 
-attach("~/data.Rda")
-cleantable <- set1 %>%
-  select(
-    Name = name,
-    City = city,
-    Rating = rating,
-    Lat = latitude,
-    Long = longitude,
-    State = state
-  )
+# get data
+attach("C:\\cuny\\2017Spring\\df.Rda")
+
+axis_vars <- c(
+  "score" = "score",
+  "rating" = "rating",
+  "review_count" = "review_count"
+)
